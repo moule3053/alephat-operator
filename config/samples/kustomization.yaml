@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- alephat_v1_multiclusterresource.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples
