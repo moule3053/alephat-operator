@@ -111,6 +111,7 @@ func (r *MultiClusterResourceReconciler) Reconcile(ctx context.Context, req reco
 
 	// Update status to reflect the error if there are missing clusters
 	if len(missingClusters) > 0 {
+		logger.Error(nil, "One or more specified clusters do not have corresponding secrets", "clusters", missingClusters)
 		meta.SetStatusCondition(&multiClusterResource.Status.Conditions, metav1.Condition{
 			Type:    "Error",
 			Status:  metav1.ConditionTrue,
@@ -221,6 +222,52 @@ func (r *MultiClusterResourceReconciler) Reconcile(ctx context.Context, req reco
 				} else {
 					// Log the creation of the resource
 					logger.Info("Resource created", "timestamp", time.Now().Format(time.RFC3339), "name", resource.GetName(), "namespace", resource.GetNamespace(), "cluster", clusterName)
+				}
+			}
+		}
+	}
+
+	// Remove resources from clusters that are no longer in targetClusters
+	for _, secret := range secretList.Items {
+		if strings.HasPrefix(secret.Name, "kubeconfig-") {
+			clusterName := strings.TrimPrefix(secret.Name, "kubeconfig-")
+			if len(targetClusters) > 0 && contains(targetClusters, clusterName) {
+				continue
+			}
+
+			kubeconfig := secret.Data["kubeconfig"]
+			// Build the client for the target cluster
+			restConfig, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
+			if err != nil {
+				logger.Error(err, "Failed to build REST config for cluster", "cluster", clusterName)
+				continue
+			}
+			dynamicClient, err := dynamic.NewForConfig(restConfig)
+			if err != nil {
+				logger.Error(err, "Failed to create dynamic client for cluster", "cluster", clusterName)
+				continue
+			}
+			// Delete the resources from the MultiClusterResource in the target cluster
+			for _, manifest := range multiClusterResource.Spec.ResourceManifest {
+				// Parse the YAML manifest into an unstructured.Unstructured object
+				resource := &unstructured.Unstructured{}
+				if err := yaml.Unmarshal([]byte(manifest), resource); err != nil {
+					logger.Error(err, "Failed to unmarshal YAML into unstructured", "manifest", manifest)
+					continue
+				}
+				// Set the namespace if not specified
+				if resource.GetNamespace() == "" {
+					resource.SetNamespace("default")
+				}
+				// Delete the resource
+				gvr, _ := meta.UnsafeGuessKindToResource(resource.GroupVersionKind())
+				err = dynamicClient.Resource(gvr).Namespace(resource.GetNamespace()).Delete(ctx, resource.GetName(), metav1.DeleteOptions{})
+				if err != nil && !errors.IsNotFound(err) {
+					logger.Error(err, "Failed to delete resource", "resource", resource.GetName(), "cluster", clusterName)
+					continue
+				} else {
+					// Log the deletion of the resource
+					logger.Info("Resource deleted", "timestamp", time.Now().Format(time.RFC3339), "name", resource.GetName(), "namespace", resource.GetNamespace(), "cluster", clusterName)
 				}
 			}
 		}
