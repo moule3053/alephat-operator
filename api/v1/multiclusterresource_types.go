@@ -14,8 +14,9 @@ type MultiClusterResourceSpec struct {
 
 // MultiClusterResourceStatus defines the observed state of MultiClusterResource
 type MultiClusterResourceStatus struct {
-	TargetClusters []string           `json:"targetClusters,omitempty"`
-	Conditions     []metav1.Condition `json:"conditions,omitempty"`
+	TargetClusters   []string           `json:"targetClusters,omitempty"`
+	Conditions       []metav1.Condition `json:"conditions,omitempty"`
+	DeployedClusters []string           `json:"deployedClusters,omitempty"`
 }
 
 // +kubebuilder:object:root=true

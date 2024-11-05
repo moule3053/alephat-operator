@@ -3,23 +3,18 @@ package controller
 import (
 	"context"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/yaml"
 
 	alephatv1 "github.com/moule3053/multiclusterresource/api/v1"
 )
@@ -40,12 +35,9 @@ func (r *MultiClusterResourceReconciler) Reconcile(ctx context.Context, req reco
 	err := r.Get(ctx, req.NamespacedName, multiClusterResource)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Object not found, return. Created objects are automatically garbage collected.
-			// For additional cleanup logic use finalizers.
 			logger.Info("MultiClusterResource not found. Ignoring since object must be deleted.")
 			return reconcile.Result{}, nil
 		}
-		// Error reading the object - requeue the request.
 		logger.Error(err, "Failed to get MultiClusterResource")
 		return reconcile.Result{}, err
 	}
@@ -60,7 +52,6 @@ func (r *MultiClusterResourceReconciler) Reconcile(ctx context.Context, req reco
 		}
 	} else {
 		if controllerutil.ContainsFinalizer(multiClusterResource, finalizerName) {
-			// Run finalization logic for multiClusterResource
 			if err := r.finalizeMultiClusterResource(ctx, multiClusterResource); err != nil {
 				return reconcile.Result{}, err
 			}
@@ -79,35 +70,7 @@ func (r *MultiClusterResourceReconciler) Reconcile(ctx context.Context, req reco
 		return reconcile.Result{}, err
 	}
 
-	var targetClusters []string
-	var missingClusters []string
-	if multiClusterResource.Spec.TargetClusters != "" {
-		targetClusters = strings.Split(multiClusterResource.Spec.TargetClusters, ",")
-		for i := range targetClusters {
-			targetClusters[i] = strings.TrimSpace(targetClusters[i])
-		}
-
-		// Check if all specified clusters have corresponding secrets
-		for _, cluster := range targetClusters {
-			found := false
-			for _, secret := range secretList.Items {
-				if strings.TrimPrefix(secret.Name, "kubeconfig-") == cluster {
-					found = true
-					break
-				}
-			}
-			if !found {
-				missingClusters = append(missingClusters, cluster)
-			}
-		}
-	} else {
-		for _, secret := range secretList.Items {
-			if strings.HasPrefix(secret.Name, "kubeconfig-") {
-				clusterName := strings.TrimPrefix(secret.Name, "kubeconfig-")
-				targetClusters = append(targetClusters, clusterName)
-			}
-		}
-	}
+	targetClusters, missingClusters := getTargetClusters(multiClusterResource, secretList)
 
 	// Update status to reflect the error if there are missing clusters
 	if len(missingClusters) > 0 {
@@ -122,10 +85,7 @@ func (r *MultiClusterResourceReconciler) Reconcile(ctx context.Context, req reco
 		meta.RemoveStatusCondition(&multiClusterResource.Status.Conditions, "Error")
 	}
 
-	if err := r.updateStatusWithRetry(ctx, multiClusterResource); err != nil {
-		logger.Error(err, "Failed to update MultiClusterResource status")
-		return reconcile.Result{}, err
-	}
+	deployedClusters := []string{}
 
 	// Create resources in the target clusters that have corresponding secrets
 	for _, secret := range secretList.Items {
@@ -135,95 +95,10 @@ func (r *MultiClusterResourceReconciler) Reconcile(ctx context.Context, req reco
 				continue
 			}
 
-			kubeconfig := secret.Data["kubeconfig"]
-			// Build the client for the target cluster
-			restConfig, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
-			if err != nil {
-				logger.Error(err, "Failed to build REST config for cluster", "cluster", clusterName)
-				meta.SetStatusCondition(&multiClusterResource.Status.Conditions, metav1.Condition{
-					Type:    "Error",
-					Status:  metav1.ConditionTrue,
-					Reason:  "FailedToBuildRESTConfig",
-					Message: "Failed to build REST config for cluster: " + clusterName + ". Error: " + err.Error(),
-				})
-				if statusErr := r.updateStatusWithRetry(ctx, multiClusterResource); statusErr != nil {
-					logger.Error(statusErr, "Failed to update MultiClusterResource status")
-				}
+			if err := applyResourcesToCluster(ctx, logger, secret, multiClusterResource, r); err != nil {
 				continue
 			}
-			dynamicClient, err := dynamic.NewForConfig(restConfig)
-			if err != nil {
-				logger.Error(err, "Failed to create dynamic client for cluster", "cluster", clusterName)
-				meta.SetStatusCondition(&multiClusterResource.Status.Conditions, metav1.Condition{
-					Type:    "Error",
-					Status:  metav1.ConditionTrue,
-					Reason:  "FailedToCreateDynamicClient",
-					Message: "Failed to create dynamic client for cluster: " + clusterName + ". Error: " + err.Error(),
-				})
-				if statusErr := r.updateStatusWithRetry(ctx, multiClusterResource); statusErr != nil {
-					logger.Error(statusErr, "Failed to update MultiClusterResource status")
-				}
-				continue
-			}
-			// Apply the resources from the MultiClusterResource to the target cluster
-			for _, manifest := range multiClusterResource.Spec.ResourceManifest {
-				// Parse the YAML manifest into an unstructured.Unstructured object
-				resource := &unstructured.Unstructured{}
-				if err := yaml.Unmarshal([]byte(manifest), resource); err != nil {
-					logger.Error(err, "Failed to unmarshal YAML into unstructured", "manifest", manifest)
-					meta.SetStatusCondition(&multiClusterResource.Status.Conditions, metav1.Condition{
-						Type:    "Error",
-						Status:  metav1.ConditionTrue,
-						Reason:  "FailedToUnmarshalYAML",
-						Message: "Failed to unmarshal YAML into unstructured: " + manifest + ". Error: " + err.Error(),
-					})
-					if statusErr := r.updateStatusWithRetry(ctx, multiClusterResource); statusErr != nil {
-						logger.Error(statusErr, "Failed to update MultiClusterResource status")
-					}
-					continue
-				}
-				// Set the namespace if not specified
-				if resource.GetNamespace() == "" {
-					resource.SetNamespace("default")
-				}
-				// Create or update the resource
-				gvr, _ := meta.UnsafeGuessKindToResource(resource.GroupVersionKind())
-				_, err = dynamicClient.Resource(gvr).Namespace(resource.GetNamespace()).Create(ctx, resource, metav1.CreateOptions{})
-				if err != nil {
-					if errors.IsAlreadyExists(err) {
-						_, err = dynamicClient.Resource(gvr).Namespace(resource.GetNamespace()).Update(ctx, resource, metav1.UpdateOptions{})
-						if err != nil {
-							logger.Error(err, "Failed to update resource", "resource", resource.GetName(), "cluster", clusterName)
-							meta.SetStatusCondition(&multiClusterResource.Status.Conditions, metav1.Condition{
-								Type:    "Error",
-								Status:  metav1.ConditionTrue,
-								Reason:  "FailedToUpdateResource",
-								Message: "Failed to update resource: " + resource.GetName() + " in cluster: " + clusterName + ". Error: " + err.Error(),
-							})
-							if statusErr := r.updateStatusWithRetry(ctx, multiClusterResource); statusErr != nil {
-								logger.Error(statusErr, "Failed to update MultiClusterResource status")
-							}
-							continue
-						}
-						logger.Info("Resource updated", "timestamp", time.Now().Format(time.RFC3339), "name", resource.GetName(), "namespace", resource.GetNamespace(), "cluster", clusterName)
-					} else {
-						logger.Error(err, "Failed to create resource", "resource", resource.GetName(), "cluster", clusterName)
-						meta.SetStatusCondition(&multiClusterResource.Status.Conditions, metav1.Condition{
-							Type:    "Error",
-							Status:  metav1.ConditionTrue,
-							Reason:  "FailedToCreateResource",
-							Message: "Failed to create resource: " + resource.GetName() + " in cluster: " + clusterName + ". Error: " + err.Error(),
-						})
-						if statusErr := r.updateStatusWithRetry(ctx, multiClusterResource); statusErr != nil {
-							logger.Error(statusErr, "Failed to update MultiClusterResource status")
-						}
-						continue
-					}
-				} else {
-					// Log the creation of the resource
-					logger.Info("Resource created", "timestamp", time.Now().Format(time.RFC3339), "name", resource.GetName(), "namespace", resource.GetNamespace(), "cluster", clusterName)
-				}
-			}
+			deployedClusters = append(deployedClusters, clusterName)
 		}
 	}
 
@@ -235,43 +110,14 @@ func (r *MultiClusterResourceReconciler) Reconcile(ctx context.Context, req reco
 				continue
 			}
 
-			kubeconfig := secret.Data["kubeconfig"]
-			// Build the client for the target cluster
-			restConfig, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
-			if err != nil {
-				logger.Error(err, "Failed to build REST config for cluster", "cluster", clusterName)
+			if err := removeResourcesFromCluster(ctx, logger, secret, multiClusterResource); err != nil {
 				continue
-			}
-			dynamicClient, err := dynamic.NewForConfig(restConfig)
-			if err != nil {
-				logger.Error(err, "Failed to create dynamic client for cluster", "cluster", clusterName)
-				continue
-			}
-			// Delete the resources from the MultiClusterResource in the target cluster
-			for _, manifest := range multiClusterResource.Spec.ResourceManifest {
-				// Parse the YAML manifest into an unstructured.Unstructured object
-				resource := &unstructured.Unstructured{}
-				if err := yaml.Unmarshal([]byte(manifest), resource); err != nil {
-					logger.Error(err, "Failed to unmarshal YAML into unstructured", "manifest", manifest)
-					continue
-				}
-				// Set the namespace if not specified
-				if resource.GetNamespace() == "" {
-					resource.SetNamespace("default")
-				}
-				// Delete the resource
-				gvr, _ := meta.UnsafeGuessKindToResource(resource.GroupVersionKind())
-				err = dynamicClient.Resource(gvr).Namespace(resource.GetNamespace()).Delete(ctx, resource.GetName(), metav1.DeleteOptions{})
-				if err != nil && !errors.IsNotFound(err) {
-					logger.Error(err, "Failed to delete resource", "resource", resource.GetName(), "cluster", clusterName)
-					continue
-				} else {
-					// Log the deletion of the resource
-					logger.Info("Resource deleted", "timestamp", time.Now().Format(time.RFC3339), "name", resource.GetName(), "namespace", resource.GetNamespace(), "cluster", clusterName)
-				}
 			}
 		}
 	}
+
+	// Update the status with the list of deployed clusters
+	multiClusterResource.Status.DeployedClusters = deployedClusters
 
 	// Update status with retry logic
 	err = r.updateStatusWithRetry(ctx, multiClusterResource)
@@ -314,20 +160,7 @@ func (r *MultiClusterResourceReconciler) finalizeMultiClusterResource(ctx contex
 		return err
 	}
 
-	var targetClusters []string
-	if multiClusterResource.Spec.TargetClusters != "" {
-		targetClusters = strings.Split(multiClusterResource.Spec.TargetClusters, ",")
-		for i := range targetClusters {
-			targetClusters[i] = strings.TrimSpace(targetClusters[i])
-		}
-	} else {
-		for _, secret := range secretList.Items {
-			if strings.HasPrefix(secret.Name, "kubeconfig-") {
-				clusterName := strings.TrimPrefix(secret.Name, "kubeconfig-")
-				targetClusters = append(targetClusters, clusterName)
-			}
-		}
-	}
+	targetClusters, _ := getTargetClusters(multiClusterResource, secretList)
 
 	for _, secret := range secretList.Items {
 		if strings.HasPrefix(secret.Name, "kubeconfig-") {
@@ -336,91 +169,14 @@ func (r *MultiClusterResourceReconciler) finalizeMultiClusterResource(ctx contex
 				continue
 			}
 
-			kubeconfig := secret.Data["kubeconfig"]
-			// Build the client for the target cluster
-			restConfig, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
-			if err != nil {
-				logger.Error(err, "Failed to build REST config for cluster", "cluster", clusterName)
-				meta.SetStatusCondition(&multiClusterResource.Status.Conditions, metav1.Condition{
-					Type:    "Error",
-					Status:  metav1.ConditionTrue,
-					Reason:  "FailedToBuildRESTConfig",
-					Message: "Failed to build REST config for cluster: " + clusterName + ". Error: " + err.Error(),
-				})
-				if statusErr := r.updateStatusWithRetry(ctx, multiClusterResource); statusErr != nil {
-					logger.Error(statusErr, "Failed to update MultiClusterResource status")
-				}
+			if err := removeResourcesFromCluster(ctx, logger, secret, multiClusterResource); err != nil {
 				continue
-			}
-			dynamicClient, err := dynamic.NewForConfig(restConfig)
-			if err != nil {
-				logger.Error(err, "Failed to create dynamic client for cluster", "cluster", clusterName)
-				meta.SetStatusCondition(&multiClusterResource.Status.Conditions, metav1.Condition{
-					Type:    "Error",
-					Status:  metav1.ConditionTrue,
-					Reason:  "FailedToCreateDynamicClient",
-					Message: "Failed to create dynamic client for cluster: " + clusterName + ". Error: " + err.Error(),
-				})
-				if statusErr := r.updateStatusWithRetry(ctx, multiClusterResource); statusErr != nil {
-					logger.Error(statusErr, "Failed to update MultiClusterResource status")
-				}
-				continue
-			}
-			// Delete the resources from the MultiClusterResource in the target cluster
-			for _, manifest := range multiClusterResource.Spec.ResourceManifest {
-				// Parse the YAML manifest into an unstructured.Unstructured object
-				resource := &unstructured.Unstructured{}
-				if err := yaml.Unmarshal([]byte(manifest), resource); err != nil {
-					logger.Error(err, "Failed to unmarshal YAML into unstructured", "manifest", manifest)
-					meta.SetStatusCondition(&multiClusterResource.Status.Conditions, metav1.Condition{
-						Type:    "Error",
-						Status:  metav1.ConditionTrue,
-						Reason:  "FailedToUnmarshalYAML",
-						Message: "Failed to unmarshal YAML into unstructured: " + manifest + ". Error: " + err.Error(),
-					})
-					if statusErr := r.updateStatusWithRetry(ctx, multiClusterResource); statusErr != nil {
-						logger.Error(statusErr, "Failed to update MultiClusterResource status")
-					}
-					continue
-				}
-				// Set the namespace if not specified
-				if resource.GetNamespace() == "" {
-					resource.SetNamespace("default")
-				}
-				// Delete the resource
-				gvr, _ := meta.UnsafeGuessKindToResource(resource.GroupVersionKind())
-				err = dynamicClient.Resource(gvr).Namespace(resource.GetNamespace()).Delete(ctx, resource.GetName(), metav1.DeleteOptions{})
-				if err != nil && !errors.IsNotFound(err) {
-					logger.Error(err, "Failed to delete resource", "resource", resource.GetName(), "cluster", clusterName)
-					meta.SetStatusCondition(&multiClusterResource.Status.Conditions, metav1.Condition{
-						Type:    "Error",
-						Status:  metav1.ConditionTrue,
-						Reason:  "FailedToDeleteResource",
-						Message: "Failed to delete resource: " + resource.GetName() + " in cluster: " + clusterName + ". Error: " + err.Error(),
-					})
-					if statusErr := r.updateStatusWithRetry(ctx, multiClusterResource); statusErr != nil {
-						logger.Error(statusErr, "Failed to update MultiClusterResource status")
-					}
-					continue
-				} else {
-					// Log the deletion of the resource
-					logger.Info("Resource deleted", "timestamp", time.Now().Format(time.RFC3339), "name", resource.GetName(), "namespace", resource.GetNamespace(), "cluster", clusterName)
-				}
 			}
 		}
 	}
 
 	logger.Info("Successfully finalized MultiClusterResource", "namespace", multiClusterResource.Namespace, "name", multiClusterResource.Name)
 	return nil
-}
-
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }
 
 func (r *MultiClusterResourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
