@@ -20,7 +20,7 @@ jobs:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
           IMAGE_NAME: multiclusterresourcemanager
-          TAG: ${{ github.sha }}
+          TAG: v1.0.0
         run: echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
       - name: Build
-        run: make docker-build docker-push IMG=$DOCKER_USERNAME/$IMAGE_NAME:$TAG
+        run: make docker-build docker-push IMG="$DOCKER_USERNAME"/"$IMAGE_NAME":"$TAG"
