@@ -13,7 +13,7 @@ jobs:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
       IMAGE_NAME: multiclusterresourcemanager
-      TAG: v1.0.0
+      TAG: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - name: Set up Go 1.23
