@@ -146,7 +146,7 @@ func (r *MultiClusterResourceReconciler) updateStatusWithRetry(ctx context.Conte
 		}
 		logger.Info("Retrying status update due to conflict", "attempt", i+1)
 	}
-	return errors.NewConflict(schema.GroupResource{Group: "alephat.alephat.io", Resource: "multiclusterresources"}, multiClusterResource.Name, nil)
+	return errors.NewConflict(schema.GroupResource{Group: "alephat.io", Resource: "multiclusterresources"}, multiClusterResource.Name, nil)
 }
 
 func (r *MultiClusterResourceReconciler) finalizeMultiClusterResource(ctx context.Context, multiClusterResource *alephatv1.MultiClusterResource) error {

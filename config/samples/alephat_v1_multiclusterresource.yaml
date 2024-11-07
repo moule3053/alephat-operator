@@ -1,4 +1,4 @@
-apiVersion: alephat.alephat.io/v1
+apiVersion: alephat.io/v1
 kind: MultiClusterResource
 metadata:
   labels:

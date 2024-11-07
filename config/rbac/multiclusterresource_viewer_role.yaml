@@ -8,7 +8,7 @@ metadata:
   name: multiclusterresource-viewer-role
 rules:
 - apiGroups:
-  - alephat.alephat.io
+  - alephat.io
   resources:
   - multiclusterresources
   verbs:
@@ -16,7 +16,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - alephat.alephat.io
+  - alephat.io
   resources:
   - multiclusterresources/status
   verbs:

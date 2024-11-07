@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.1
-  name: multiclusterresources.alephat.alephat.io
+  name: multiclusterresources.alephat.io
 spec:
-  group: alephat.alephat.io
+  group: alephat.io
   names:
     kind: MultiClusterResource
     listKind: MultiClusterResourceList
@@ -113,6 +113,10 @@ spec:
                   - status
                   - type
                   type: object
+                type: array
+              deployedClusters:
+                items:
+                  type: string
                 type: array
               targetClusters:
                 items:

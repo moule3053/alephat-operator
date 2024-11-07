@@ -8,7 +8,7 @@ metadata:
   name: multiclusterresource-editor-role
 rules:
 - apiGroups:
-  - alephat.alephat.io
+  - alephat.io
   resources:
   - multiclusterresources
   verbs:
@@ -20,7 +20,7 @@ rules:
   - update
   - watch
 - apiGroups:
-  - alephat.alephat.io
+  - alephat.io
   resources:
   - multiclusterresources/status
   verbs:
