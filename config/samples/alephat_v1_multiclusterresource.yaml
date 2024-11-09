@@ -1,9 +1,0 @@
-apiVersion: alephat.io/v1
-kind: MultiClusterResource
-metadata:
-  labels:
-    app.kubernetes.io/name: multiclusterresource
-    app.kubernetes.io/managed-by: kustomize
-  name: multiclusterresource-sample
-spec:
-  # TODO(user): Add fields here
