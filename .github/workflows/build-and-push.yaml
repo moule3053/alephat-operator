@@ -8,6 +8,7 @@ on:
 
 jobs:
   build-and-push:
+    # trigger a run
     runs-on: arc-runner-set
     env:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
